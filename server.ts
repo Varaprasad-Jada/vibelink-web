@@ -9,6 +9,9 @@ import path from "path";
 async function startServer() {
   const app = express();
   const httpServer = createServer(app);
+  
+  // CORS configured to allow all for flexibility, 
+  // though you can restrict this to your Vercel URL later.
   const io = new Server(httpServer, {
     cors: {
       origin: "*",
@@ -16,7 +19,7 @@ async function startServer() {
     },
   });
 
-  const PORT = 3000;
+  const PORT = process.env.PORT || 3000;
   const BLACKLIST_FILE = resolve(process.cwd(), "blacklist.json");
 
   const usersByDeviceId = new Map();
@@ -193,6 +196,8 @@ async function startServer() {
       }
     });
 
+    // --- SIGNALING FOR WEBRTC & UI STATES ---
+    
     socket.on("SIG_SDP", (payload: any = {}) => {
       const session = getSessionBySocketId(socket.id);
       if (session?.peerSocketId === payload.targetSocketId) {
@@ -204,6 +209,16 @@ async function startServer() {
       const session = getSessionBySocketId(socket.id);
       if (session?.peerSocketId === payload.targetSocketId) {
         io.to(payload.targetSocketId).emit("SIG_ICE", { fromSocketId: socket.id, candidate: payload.candidate });
+      }
+    });
+
+    // NEW: Relay camera/mic state changes to the stranger
+    socket.on("SIG_VIDEO_STATE_CHANGE", (payload: any = {}) => {
+      const session = getSessionBySocketId(socket.id);
+      if (session?.peerSocketId) {
+        io.to(session.peerSocketId).emit("SIG_VIDEO_STATE_CHANGE", { 
+          isVideoOff: payload.isVideoOff 
+        });
       }
     });
 
@@ -258,6 +273,7 @@ async function startServer() {
     });
   });
 
+  // Serve Frontend
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -273,7 +289,7 @@ async function startServer() {
   }
 
   httpServer.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+    console.log(`Server running on port ${PORT}`);
   });
 }
 
