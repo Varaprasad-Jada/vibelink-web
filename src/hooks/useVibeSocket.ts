@@ -6,24 +6,70 @@ export function useVibeSocket() {
   const socketRef = useRef<Socket | null>(null);
   const [onlineCount, setOnlineCount] = useState(0);
   const [isBanned, setIsBanned] = useState(false);
+  const [isConnected, setIsConnected] = useState(false);
 
   useEffect(() => {
+    // 1. Manage Device ID
     const deviceId = localStorage.getItem('vibelink_device_id') || uuidv4();
     localStorage.setItem('vibelink_device_id', deviceId);
 
-const socket = io("https://vibelink-vowy.onrender.com");    socketRef.current = socket;
+    // 2. Initialize Socket with forced WebSocket transport
+    // This prevents Vercel from blocking the connection
+    const socket = io("https://vibelink-vowy.onrender.com", {
+      transports: ["websocket"],
+      upgrade: false,
+      secure: true,
+      reconnection: true,
+      reconnectionAttempts: 5,
+      reconnectionDelay: 2000,
+    });
 
+    socketRef.current = socket;
+
+    // 3. Connection Listeners
     socket.on('connect', () => {
+      console.log("✅ Connected to Server via WebSocket");
+      setIsConnected(true);
       socket.emit('SIG_REGISTER', { deviceId });
     });
 
-    socket.on('SIG_ONLINE', (data) => setOnlineCount(data.count));
-    socket.on('SIG_BANNED', () => setIsBanned(true));
+    socket.on('disconnect', () => {
+      console.log("❌ Disconnected from Server");
+      setIsConnected(false);
+    });
 
+    socket.on('connect_error', (error) => {
+      console.error("⚠️ Connection Error:", error.message);
+    });
+
+    // 4. Custom VibeLink Events
+    socket.on('SIG_ONLINE', (data) => {
+      if (data && typeof data.count === 'number') {
+        setOnlineCount(data.count);
+      }
+    });
+
+    socket.on('SIG_BANNED', () => {
+      setIsBanned(true);
+    });
+
+    // 5. Cleanup on unmount
     return () => {
-      socket.disconnect();
+      if (socket) {
+        socket.off('connect');
+        socket.off('disconnect');
+        socket.off('connect_error');
+        socket.off('SIG_ONLINE');
+        socket.off('SIG_BANNED');
+        socket.disconnect();
+      }
     };
   }, []);
 
-  return { socket: socketRef.current, onlineCount, isBanned };
+  return { 
+    socket: socketRef.current, 
+    onlineCount, 
+    isBanned,
+    isConnected 
+  };
 }
