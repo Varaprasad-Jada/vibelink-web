@@ -15,46 +15,16 @@ async function startServer() {
   });
 
   const PORT = process.env.PORT || 3000;
-  const BLACKLIST_FILE = resolve(process.cwd(), "blacklist.json");
   const usersByDeviceId = new Map();
   const socketToDeviceId = new Map();
-  const bannedDevices = loadBlacklist();
-
-  function loadBlacklist() {
-    try {
-      if (!existsSync(BLACKLIST_FILE)) return new Set();
-      const parsed = JSON.parse(readFileSync(BLACKLIST_FILE, "utf8"));
-      return new Set(Array.isArray(parsed) ? parsed : []);
-    } catch { return new Set(); }
-  }
-
-  function saveBlacklist() {
-    writeFileSync(BLACKLIST_FILE, JSON.stringify([...bannedDevices], null, 2), "utf8");
-  }
-
-  function buildStats() {
-    const values = [...usersByDeviceId.values()];
-    return {
-      ok: true,
-      online: usersByDeviceId.size,
-      waiting: values.filter((s) => s.state === "WAITING").length,
-      matched: values.filter((s) => s.state === "MATCHED").length,
-      banned: bannedDevices.size,
-    };
-  }
 
   function getSessionBySocketId(socketId: string) {
     const deviceId = socketToDeviceId.get(socketId);
     return deviceId ? usersByDeviceId.get(deviceId) : null;
   }
 
-  function emitOnlineCount() {
-    io.emit("SIG_ONLINE", { count: usersByDeviceId.size });
-  }
-
   function detachPeer(session: any, reason: string, notifyPeer: boolean) {
     if (!session || !session.peerDeviceId) return;
-
     const peer = usersByDeviceId.get(session.peerDeviceId);
     const peerSocketId = session.peerSocketId;
 
@@ -73,64 +43,19 @@ async function startServer() {
     }
   }
 
-  function tryMatch(session: any) {
-    if (!session || session.state !== "WAITING") return false;
-
-    const candidates = [...usersByDeviceId.values()]
-      .filter((c) => c.deviceId !== session.deviceId && c.state === "WAITING" && c.mode === session.mode)
-      .filter((c) => !session.skippedDeviceIds.has(c.deviceId) && !c.skippedDeviceIds.has(session.deviceId));
-
-    let bestCandidate = null;
-    let bestOverlap = [];
-
-    for (const candidate of candidates) {
-      const overlap = session.interests.filter((i: string) => candidate.interests.includes(i));
-      const compatible = overlap.length > 0 || session.interests.length === 0 || candidate.interests.length === 0;
-      if (!compatible) continue;
-      if (!bestCandidate || overlap.length > bestOverlap.length) {
-        bestCandidate = candidate;
-        bestOverlap = overlap;
-      }
-    }
-
-    if (!bestCandidate) return false;
-
-    session.state = "MATCHED";
-    session.peerSocketId = bestCandidate.socketId;
-    session.peerDeviceId = bestCandidate.deviceId;
-
-    bestCandidate.state = "MATCHED";
-    bestCandidate.peerSocketId = session.socketId;
-    bestCandidate.peerDeviceId = session.deviceId;
-
-    io.to(session.socketId).emit("SIG_MATCH_FOUND", {
-      targetSocketId: bestCandidate.socketId,
-      initiator: true,
-      mode: session.mode,
-      overlapInterests: bestOverlap,
-    });
-
-    io.to(bestCandidate.socketId).emit("SIG_MATCH_FOUND", {
-      targetSocketId: session.socketId,
-      initiator: false,
-      mode: session.mode,
-      overlapInterests: bestOverlap,
-    });
-
-    return true;
-  }
-
-  app.get("/api/stats", (_req, res) => res.json(buildStats()));
-
   io.on("connection", (socket) => {
+    console.log("New connection:", socket.id);
+
     socket.on("SIG_REGISTER", (payload: any = {}) => {
       const deviceId = String(payload.deviceId || "").trim();
       if (!deviceId) return;
-      if (bannedDevices.has(deviceId)) {
-        socket.emit("SIG_BANNED");
-        socket.disconnect(true);
-        return;
+
+      // Clean up old socket if same device reconnects
+      const existing = usersByDeviceId.get(deviceId);
+      if (existing && existing.socketId !== socket.id) {
+        io.sockets.sockets.get(existing.socketId)?.disconnect();
       }
+
       usersByDeviceId.set(deviceId, {
         deviceId,
         socketId: socket.id,
@@ -142,36 +67,61 @@ async function startServer() {
         skippedDeviceIds: new Set(),
       });
       socketToDeviceId.set(socket.id, deviceId);
-      emitOnlineCount();
+      io.emit("SIG_ONLINE", { count: usersByDeviceId.size });
     });
 
     socket.on("SIG_FIND_PEER", (payload: any = {}) => {
       const session = getSessionBySocketId(socket.id);
       if (!session) return;
+
       detachPeer(session, "Next", false);
       session.mode = payload.mode === "VIDEO" ? "VIDEO" : "TEXT";
       session.interests = Array.isArray(payload.interests) ? payload.interests : [];
       session.state = "WAITING";
-      if (!tryMatch(session)) socket.emit("SIG_WAITING");
+
+      // Simple Matcher
+      const candidates = [...usersByDeviceId.values()].filter(c => 
+        c.deviceId !== session.deviceId && 
+        c.state === "WAITING" && 
+        c.mode === session.mode
+      );
+
+      if (candidates.length > 0) {
+        const peer = candidates[0];
+        session.state = "MATCHED";
+        session.peerSocketId = peer.socketId;
+        session.peerDeviceId = peer.deviceId;
+
+        peer.state = "MATCHED";
+        peer.peerSocketId = socket.id;
+        peer.peerDeviceId = session.deviceId;
+
+        io.to(socket.id).emit("SIG_MATCH_FOUND", { targetSocketId: peer.socketId, initiator: true, mode: session.mode });
+        io.to(peer.socketId).emit("SIG_MATCH_FOUND", { targetSocketId: socket.id, initiator: false, mode: session.mode });
+      } else {
+        socket.emit("SIG_WAITING");
+      }
     });
 
-    // FIXED RELAY LOGIC
+    // --- THE FIX: FORCED RELAY ---
     socket.on("SIG_TEXT_MESSAGE", (payload: any = {}) => {
       const session = getSessionBySocketId(socket.id);
-      if (session?.peerDeviceId) {
-        const peer = usersByDeviceId.get(session.peerDeviceId);
-        if (peer?.socketId) {
-          io.to(peer.socketId).emit("SIG_TEXT_MESSAGE", { text: payload.text });
-        }
+      console.log(`Msg from ${socket.id}. Peer: ${session?.peerSocketId}`);
+
+      if (session?.peerSocketId) {
+        // We broadcast to the specific room/socket of the peer
+        io.to(session.peerSocketId).emit("SIG_TEXT_MESSAGE", { 
+          text: payload.text 
+        });
       }
     });
 
     socket.on("SIG_SKIP", () => {
       const session = getSessionBySocketId(socket.id);
-      if (!session) return;
-      detachPeer(session, "Skipped", true);
-      session.state = "WAITING";
-      tryMatch(session);
+      if (session) {
+        detachPeer(session, "Skipped", true);
+        socket.emit("SIG_PEER_LEFT"); // Reset local UI
+      }
     });
 
     socket.on("disconnect", () => {
@@ -180,20 +130,17 @@ async function startServer() {
         detachPeer(session, "Disconnected", true);
         usersByDeviceId.delete(session.deviceId);
         socketToDeviceId.delete(socket.id);
-        emitOnlineCount();
+        io.emit("SIG_ONLINE", { count: usersByDeviceId.size });
       }
     });
   });
 
-  if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({ server: { middlewareMode: true }, appType: "spa" });
-    app.use(vite.middlewares);
-  } else {
-    app.use(express.static(path.join(process.cwd(), "dist")));
-    app.get("*", (req, res) => res.sendFile(path.join(process.cwd(), "dist", "index.html")));
-  }
+  // Serve Frontend
+  const distPath = path.join(process.cwd(), "dist");
+  app.use(express.static(distPath));
+  app.get("*", (req, res) => res.sendFile(path.join(distPath, "index.html")));
 
-  httpServer.listen(PORT, "0.0.0.0", () => console.log(`Server running on port ${PORT}`));
+  httpServer.listen(PORT, "0.0.0.0", () => console.log(`Server on port ${PORT}`));
 }
 
 startServer();
