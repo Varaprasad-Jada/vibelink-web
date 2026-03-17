@@ -56,7 +56,7 @@ export default function App() {
     setRemoteStream(stream);
   });
 
-  // 1. Core Signaling & Matching
+  // 1. SIGNALING & PEER MANAGEMENT
   useEffect(() => {
     if (!socket) return;
 
@@ -102,20 +102,26 @@ export default function App() {
     };
   }, [socket, mode, interests]);
 
-  // 2. Dedicated Message Listener (Fixes delivery issue)
+  // 2. STABLE MESSAGE LISTENER
   useEffect(() => {
     if (!socket) return;
 
-    const handleMessage = (data: { text: string }) => {
-      setMessages(prev => [...prev, { id: Date.now().toString(), text: data.text, isMe: false }]);
+    const handleIncomingMessage = (data: { text: string }) => {
+      setMessages(prev => [...prev, { 
+        id: Date.now().toString(), 
+        text: data.text, 
+        isMe: false 
+      }]);
     };
 
-    socket.on('SIG_TEXT_MESSAGE', handleMessage);
+    socket.on('SIG_TEXT_MESSAGE', handleIncomingMessage);
+    
     return () => {
-      socket.off('SIG_TEXT_MESSAGE', handleMessage);
+      socket.off('SIG_TEXT_MESSAGE', handleIncomingMessage);
     };
   }, [socket]);
 
+  // 3. MEDIA STREAM BINDING
   useEffect(() => {
     if (remoteVideoRef.current && remoteStream) {
       remoteVideoRef.current.srcObject = remoteStream;
@@ -128,10 +134,12 @@ export default function App() {
     }
   }, [localStream]);
 
+  // 4. AUTO SCROLL
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  // ACTIONS
   const toggleVideo = () => {
     const nextVideoState = !isVideoOff;
     setIsVideoOff(nextVideoState);
