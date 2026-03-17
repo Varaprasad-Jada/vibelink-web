@@ -12,30 +12,28 @@ export function useVibeSocket() {
     const deviceId = localStorage.getItem('vibelink_device_id') || uuidv4();
     localStorage.setItem('vibelink_device_id', deviceId);
 
-    const socket = io("https://vibelink-vowy.onrender.com", {
-      transports: ["websocket"],
-      upgrade: false,
-      secure: true,
-      reconnection: true,
-      reconnectionAttempts: 5,
-      reconnectionDelay: 2000,
-    });
+    if (!socketRef.current) {
+      socketRef.current = io("https://vibelink-vowy.onrender.com", {
+        transports: ["websocket"],
+        upgrade: false,
+        secure: true,
+        reconnection: true,
+        reconnectionAttempts: 5,
+        reconnectionDelay: 2000,
+      });
+    }
 
-    socketRef.current = socket;
+    const socket = socketRef.current;
 
     socket.on('connect', () => {
-      console.log("✅ Connected to Server via WebSocket");
+      console.log("✅ Socket Connected:", socket.id);
       setIsConnected(true);
       socket.emit('SIG_REGISTER', { deviceId });
     });
 
     socket.on('disconnect', () => {
-      console.log("❌ Disconnected from Server");
+      console.log("❌ Socket Disconnected");
       setIsConnected(false);
-    });
-
-    socket.on('connect_error', (error) => {
-      console.error("⚠️ Connection Error:", error.message);
     });
 
     socket.on('SIG_ONLINE', (data) => {
@@ -44,14 +42,10 @@ export function useVibeSocket() {
       }
     });
 
-    socket.on('SIG_BANNED', () => {
-      setIsBanned(true);
-    });
+    socket.on('SIG_BANNED', () => setIsBanned(true));
 
     return () => {
-      if (socket) {
-        socket.disconnect();
-      }
+      // Keep the connection alive during app state changes
     };
   }, []);
 
