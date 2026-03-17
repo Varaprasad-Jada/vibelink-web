@@ -1,0 +1,5 @@
+{
+  "name": "VibeLink",
+  "description": "Random video and text chat app with interest matching.",
+  "requestFramePermissions": ["camera", "microphone"]
+}
