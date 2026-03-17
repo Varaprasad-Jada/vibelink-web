@@ -10,8 +10,6 @@ async function startServer() {
   const app = express();
   const httpServer = createServer(app);
   
-  // CORS configured to allow all for flexibility, 
-  // though you can restrict this to your Vercel URL later.
   const io = new Server(httpServer, {
     cors: {
       origin: "*",
@@ -72,9 +70,12 @@ async function startServer() {
     const peer = usersByDeviceId.get(session.peerDeviceId);
     const peerSocketId = session.peerSocketId;
 
+    // Reset current user session
     session.peerSocketId = null;
     session.peerDeviceId = null;
+    session.state = "IDLE";
 
+    // Reset peer session
     if (peer) {
       peer.peerSocketId = null;
       peer.peerDeviceId = null;
@@ -189,15 +190,18 @@ async function startServer() {
       emitOnlineCount();
     });
 
+    // FIXED: Stronger message delivery logic
     socket.on("SIG_TEXT_MESSAGE", (payload: any = {}) => {
       const session = getSessionBySocketId(socket.id);
-      if (session?.peerSocketId) {
-        io.to(session.peerSocketId).emit("SIG_TEXT_MESSAGE", { text: payload.text });
+      if (session?.peerDeviceId) {
+        // Look up peer current session to handle reconnection gracefully
+        const peerSession = usersByDeviceId.get(session.peerDeviceId);
+        if (peerSession?.socketId) {
+          io.to(peerSession.socketId).emit("SIG_TEXT_MESSAGE", { text: payload.text });
+        }
       }
     });
 
-    // --- SIGNALING FOR WEBRTC & UI STATES ---
-    
     socket.on("SIG_SDP", (payload: any = {}) => {
       const session = getSessionBySocketId(socket.id);
       if (session?.peerSocketId === payload.targetSocketId) {
@@ -212,7 +216,6 @@ async function startServer() {
       }
     });
 
-    // NEW: Relay camera/mic state changes to the stranger
     socket.on("SIG_VIDEO_STATE_CHANGE", (payload: any = {}) => {
       const session = getSessionBySocketId(socket.id);
       if (session?.peerSocketId) {
@@ -273,7 +276,6 @@ async function startServer() {
     });
   });
 
-  // Serve Frontend
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
