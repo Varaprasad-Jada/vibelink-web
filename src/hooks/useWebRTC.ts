@@ -3,6 +3,7 @@ import { Socket } from 'socket.io-client';
 
 export function useWebRTC(socket: Socket | null, onRemoteStream: (stream: MediaStream) => void) {
   const pcRef = useRef<RTCPeerConnection | null>(null);
+  const localStreamRef = useRef<MediaStream | null>(null);
 
   const cleanup = () => {
     if (pcRef.current) {
@@ -27,13 +28,19 @@ export function useWebRTC(socket: Socket | null, onRemoteStream: (stream: MediaS
       onRemoteStream(event.streams[0]);
     };
 
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach((track) => {
+        pc.addTrack(track, localStreamRef.current!);
+      });
+    }
+
     pcRef.current = pc;
     return pc;
   };
 
   const startCall = async (targetSocketId: string, stream: MediaStream) => {
+    localStreamRef.current = stream;
     const pc = initPC(targetSocketId);
-    stream.getTracks().forEach(track => pc.addTrack(track, stream));
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
     socket?.emit('SIG_SDP', { targetSocketId, description: offer });
@@ -41,10 +48,12 @@ export function useWebRTC(socket: Socket | null, onRemoteStream: (stream: MediaS
 
   const handleSdp = async (fromSocketId: string, description: RTCSessionDescriptionInit) => {
     if (!pcRef.current) initPC(fromSocketId);
-    await pcRef.current!.setRemoteDescription(new RTCSessionDescription(description));
+    const pc = pcRef.current!;
+
+    await pc.setRemoteDescription(new RTCSessionDescription(description));
     if (description.type === 'offer') {
-      const answer = await pcRef.current!.createAnswer();
-      await pcRef.current!.setLocalDescription(answer);
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
       socket?.emit('SIG_SDP', { targetSocketId: fromSocketId, description: answer });
     }
   };
@@ -53,7 +62,7 @@ export function useWebRTC(socket: Socket | null, onRemoteStream: (stream: MediaS
     try {
       await pcRef.current?.addIceCandidate(new RTCIceCandidate(candidate));
     } catch (e) {
-      console.error(e);
+      console.error('Error adding ICE candidate', e);
     }
   };
 
