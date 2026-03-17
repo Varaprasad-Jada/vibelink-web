@@ -51,6 +51,12 @@ export default function App() {
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
+  
+  // EMERGENCY REF: Keeps the socket instance alive for the sendMessage function
+  const socketRef = useRef(socket);
+  useEffect(() => {
+    socketRef.current = socket;
+  }, [socket]);
 
   const { startCall, handleSdp, handleIce, cleanup: cleanupRTC } = useWebRTC(socket, (stream) => {
     setRemoteStream(stream);
@@ -61,6 +67,7 @@ export default function App() {
     if (!socket) return;
 
     socket.on('SIG_MATCH_FOUND', async (data) => {
+      console.log("MATCH FOUND:", data);
       setRemoteVideoOff(false);
       setPeerSocketId(data.targetSocketId);
       setAppState('CHAT');
@@ -107,8 +114,9 @@ export default function App() {
     if (!socket) return;
 
     const handleIncomingMessage = (data: { text: string }) => {
+      console.log("EMERGENCY: Incoming message detected", data.text);
       setMessages(prev => [...prev, { 
-        id: Date.now().toString(), 
+        id: Math.random().toString(36), 
         text: data.text, 
         isMe: false 
       }]);
@@ -121,7 +129,7 @@ export default function App() {
     };
   }, [socket]);
 
-  // 3. MEDIA STREAM BINDING
+  // 3. MEDIA BINDING
   useEffect(() => {
     if (remoteVideoRef.current && remoteStream) {
       remoteVideoRef.current.srcObject = remoteStream;
@@ -139,26 +147,34 @@ export default function App() {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // ACTIONS
-  const toggleVideo = () => {
-    const nextVideoState = !isVideoOff;
-    setIsVideoOff(nextVideoState);
-    if (localStream) {
-      localStream.getVideoTracks().forEach(track => {
-        track.enabled = !nextVideoState;
-      });
-    }
-    socket?.emit('SIG_VIDEO_STATE_CHANGE', { isVideoOff: nextVideoState });
-  };
+  // 5. SEND MESSAGE (REF-BASED)
+  const sendMessage = () => {
+    const currentSocket = socketRef.current;
+    
+    console.log("TRYING TO SEND:", { 
+      text: inputText, 
+      socketExists: !!currentSocket, 
+      socketId: currentSocket?.id 
+    });
 
-  const toggleMute = () => {
-    const nextMuteState = !isMuted;
-    setIsMuted(nextMuteState);
-    if (localStream) {
-      localStream.getAudioTracks().forEach(track => {
-        track.enabled = !nextMuteState;
-      });
+    if (!inputText.trim()) return;
+    
+    if (!currentSocket || !currentSocket.connected) {
+      console.error("CRITICAL: Socket is not connected. Message aborted.");
+      return;
     }
+
+    // Emit to server
+    currentSocket.emit('SIG_TEXT_MESSAGE', { text: inputText });
+    
+    // Update UI immediately
+    setMessages(prev => [...prev, { 
+      id: Math.random().toString(36), 
+      text: inputText, 
+      isMe: true 
+    }]);
+    
+    setInputText('');
   };
 
   const resetChat = () => {
@@ -185,13 +201,6 @@ export default function App() {
     socket?.emit('SIG_SKIP');
     resetChat();
     setAppState('MATCHING');
-  };
-
-  const sendMessage = () => {
-    if (!inputText.trim() || !socket) return;
-    socket.emit('SIG_TEXT_MESSAGE', { text: inputText });
-    setMessages(prev => [...prev, { id: Date.now().toString(), text: inputText, isMe: true }]);
-    setInputText('');
   };
 
   const addInterest = () => {
