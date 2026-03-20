@@ -9,33 +9,40 @@ export function useVibeSocket() {
   const [isConnected, setIsConnected] = useState(false);
 
   useEffect(() => {
-    // 1. Handle Device ID
+    // 1. Manage Device ID
     const deviceId = localStorage.getItem('vibelink_device_id') || uuidv4();
     localStorage.setItem('vibelink_device_id', deviceId);
 
-    // 2. Initialize Socket (Only if not already initialized)
-    if (!socketRef.current) {
-      socketRef.current = io("https://your-vibelink-server.onrender.com", {
-        transports: ["websocket"], // Forces WebSocket to avoid polling issues
-        reconnection: true,
-      });
-    }
+    // 2. Initialize Socket with forced WebSocket transport
+    // This prevents Vercel from blocking the connection
+    const socket = io("https://vibelink-vowy.onrender.com", {
+      transports: ["websocket"],
+      upgrade: false,
+      secure: true,
+      reconnection: true,
+      reconnectionAttempts: 5,
+      reconnectionDelay: 2000,
+    });
 
-    const socket = socketRef.current;
+    socketRef.current = socket;
 
-    // 3. Set up listeners
+    // 3. Connection Listeners
     socket.on('connect', () => {
-      console.log('✅ Connected to signaling server:', socket.id);
+      console.log("✅ Connected to Server via WebSocket");
       setIsConnected(true);
-      // Register with the server immediately upon connection
       socket.emit('SIG_REGISTER', { deviceId });
     });
 
     socket.on('disconnect', () => {
-      console.log('❌ Socket disconnected');
+      console.log("❌ Disconnected from Server");
       setIsConnected(false);
     });
 
+    socket.on('connect_error', (error) => {
+      console.error("⚠️ Connection Error:", error.message);
+    });
+
+    // 4. Custom VibeLink Events
     socket.on('SIG_ONLINE', (data) => {
       if (data && typeof data.count === 'number') {
         setOnlineCount(data.count);
@@ -44,22 +51,25 @@ export function useVibeSocket() {
 
     socket.on('SIG_BANNED', () => {
       setIsBanned(true);
-      socket.disconnect();
     });
 
-    // 4. Cleanup on Unmount
+    // 5. Cleanup on unmount
     return () => {
-      socket.off('connect');
-      socket.off('disconnect');
-      socket.off('SIG_ONLINE');
-      socket.off('SIG_BANNED');
+      if (socket) {
+        socket.off('connect');
+        socket.off('disconnect');
+        socket.off('connect_error');
+        socket.off('SIG_ONLINE');
+        socket.off('SIG_BANNED');
+        socket.disconnect();
+      }
     };
   }, []);
 
   return { 
     socket: socketRef.current, 
     onlineCount, 
-    isBanned, 
+    isBanned,
     isConnected 
   };
 }
