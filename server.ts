@@ -9,7 +9,6 @@ async function startServer() {
   const app = express();
   const httpServer = createServer(app);
   
-  // CORS is critical for Render
   const io = new Server(httpServer, {
     cors: {
       origin: "*",
@@ -51,7 +50,7 @@ async function startServer() {
     if (!session || !session.peerDeviceId) return;
 
     const peer = usersByDeviceId.get(session.peerDeviceId);
-    const peerSocketId = session.peerSocketId;
+    const peerDeviceId = session.peerDeviceId;
 
     session.peerSocketId = null;
     session.peerDeviceId = null;
@@ -63,8 +62,9 @@ async function startServer() {
       peer.state = "IDLE";
     }
 
-    if (notifyPeer && peerSocketId) {
-      io.to(peerSocketId).emit("SIG_PEER_LEFT", { reason });
+    if (notifyPeer && peerDeviceId) {
+      // Send to the peer's permanent device room
+      io.to(`room_${peerDeviceId}`).emit("SIG_PEER_LEFT", { reason });
     }
   }
 
@@ -80,7 +80,6 @@ async function startServer() {
 
     if (candidates.length === 0) return false;
 
-    // Interest matching
     let bestCandidate = candidates[0];
     let maxOverlap = 0;
 
@@ -100,13 +99,24 @@ async function startServer() {
     bestCandidate.peerSocketId = session.socketId;
     bestCandidate.peerDeviceId = session.deviceId;
 
-    io.to(session.socketId).emit("SIG_MATCH_FOUND", { targetSocketId: bestCandidate.socketId, initiator: true, mode: session.mode });
-    io.to(bestCandidate.socketId).emit("SIG_MATCH_FOUND", { targetSocketId: session.socketId, initiator: false, mode: session.mode });
+    // Use Room-based targeting for the match notification too
+    io.to(`room_${session.deviceId}`).emit("SIG_MATCH_FOUND", { 
+      targetSocketId: bestCandidate.socketId, 
+      initiator: true, 
+      mode: session.mode 
+    });
+    
+    io.to(`room_${bestCandidate.deviceId}`).emit("SIG_MATCH_FOUND", { 
+      targetSocketId: session.socketId, 
+      initiator: false, 
+      mode: session.mode 
+    });
+    
     return true;
   }
 
   io.on("connection", (socket) => {
-    console.log(`[CONN] Socket ${socket.id} joined`);
+    console.log(`[CONN] ${socket.id}`);
 
     socket.on("SIG_REGISTER", (payload: any = {}) => {
       const deviceId = String(payload.deviceId || "").trim();
@@ -117,22 +127,21 @@ async function startServer() {
         return socket.disconnect();
       }
 
-      // Cleanup old sessions for this device
-      const oldSession = usersByDeviceId.get(deviceId);
-      if (oldSession) {
-        io.to(oldSession.socketId).emit("SIG_PEER_LEFT", { reason: "Logged in elsewhere" });
-      }
+      // Join a permanent room for this device
+      socket.join(`room_${deviceId}`);
 
+      const existing = usersByDeviceId.get(deviceId);
       usersByDeviceId.set(deviceId, {
         deviceId,
         socketId: socket.id,
-        interests: [],
-        mode: "TEXT",
+        interests: existing?.interests || [],
+        mode: existing?.mode || "TEXT",
         state: "IDLE",
         peerSocketId: null,
         peerDeviceId: null,
-        skippedDeviceIds: new Set(),
+        skippedDeviceIds: existing?.skippedDeviceIds || new Set(),
       });
+      
       socketToDeviceId.set(socket.id, deviceId);
       emitOnlineCount();
     });
@@ -143,7 +152,7 @@ async function startServer() {
 
       detachPeer(session, "Next", false);
       session.mode = payload.mode || "TEXT";
-      session.interests = payload.interests || [];
+      session.interests = Array.isArray(payload.interests) ? payload.interests : [];
       session.state = "WAITING";
 
       if (!tryMatch(session)) {
@@ -151,14 +160,16 @@ async function startServer() {
       }
     });
 
-    // --- CRITICAL FIX: Direct Relay ---
+    // --- THE CRITICAL FIX: ROOM-BASED DELIVERY ---
     socket.on("SIG_TEXT_MESSAGE", (payload: any = {}) => {
       const session = getSessionBySocketId(socket.id);
       
-      if (session && session.peerSocketId) {
-        console.log(`[MSG] ${socket.id} -> ${session.peerSocketId}: ${payload.text}`);
-        // Use io.to() instead of fetching the socket object manually
-        io.to(session.peerSocketId).emit("SIG_TEXT_MESSAGE", { 
+      if (session && session.peerDeviceId) {
+        const targetRoom = `room_${session.peerDeviceId}`;
+        console.log(`[MSG] ${session.deviceId} -> ${targetRoom}`);
+        
+        // Emit to the peer's device room instead of their specific socket ID
+        io.to(targetRoom).emit("SIG_TEXT_MESSAGE", { 
           text: payload.text 
         });
       }
@@ -177,6 +188,7 @@ async function startServer() {
       const deviceId = socketToDeviceId.get(socket.id);
       if (deviceId) {
         const session = usersByDeviceId.get(deviceId);
+        // Only delete if this is the active socket for that device
         if (session && session.socketId === socket.id) {
           detachPeer(session, "Disconnected", true);
           usersByDeviceId.delete(deviceId);
@@ -187,7 +199,6 @@ async function startServer() {
     });
   });
 
-  // Production Build Handling
   const distPath = path.join(process.cwd(), "dist");
   app.use(express.static(distPath));
   app.get("*", (req, res) => res.sendFile(path.join(distPath, "index.html")));
