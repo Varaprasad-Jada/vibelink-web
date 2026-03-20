@@ -80,7 +80,16 @@ export default function App() {
     socket.on('SIG_SDP', (data) => handleSdp(data.fromSocketId, data.description));
     socket.on('SIG_ICE', (data) => handleIce(data.candidate));
     socket.on('SIG_TEXT_MESSAGE', (data) => {
-      setMessages(prev => [...prev, { id: Date.now().toString(), text: data.text, isMe: false }]);
+      console.log('[Client] Received SIG_TEXT_MESSAGE:', data);
+      if (data && data.text) {
+        setMessages(prev => {
+          const newMessages = [...prev, { id: Date.now().toString(), text: data.text, isMe: false }];
+          console.log('[Client] Updated messages state (received):', newMessages.length);
+          return newMessages;
+        });
+      } else {
+        console.warn('[Client] Received SIG_TEXT_MESSAGE with missing text:', data);
+      }
     });
 
     socket.on('SIG_PEER_LEFT', () => {
@@ -115,6 +124,7 @@ export default function App() {
   }, [messages]);
 
   const resetChat = () => {
+    console.log('[Client] Resetting chat state');
     setMessages([]);
     setRemoteStream(null);
     if (localStream) {
@@ -138,9 +148,17 @@ export default function App() {
   };
 
   const sendMessage = () => {
-    if (!inputText.trim() || !socket) return;
+    if (!inputText.trim() || !socket) {
+      console.warn('[Client] Cannot send message: empty text or no socket');
+      return;
+    }
+    console.log('[Client] Emitting SIG_TEXT_MESSAGE:', inputText);
     socket.emit('SIG_TEXT_MESSAGE', { text: inputText });
-    setMessages(prev => [...prev, { id: Date.now().toString(), text: inputText, isMe: true }]);
+    setMessages(prev => {
+      const newMessages = [...prev, { id: Date.now().toString(), text: inputText, isMe: true }];
+      console.log('[Client] Updated messages state (sent):', newMessages.length);
+      return newMessages;
+    });
     setInputText('');
   };
 
