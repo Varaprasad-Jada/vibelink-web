@@ -11,8 +11,7 @@ export function useVibeSocket() {
     const deviceId = localStorage.getItem('vibelink_device_id') || uuidv4();
     localStorage.setItem('vibelink_device_id', deviceId);
 
-    const newSocket = io(window.location.origin, {
-      transports: ['websocket', 'polling'],
+const socket = io("https://your-vibelink-server.onrender.com");      transports: ['websocket', 'polling'],
       reconnection: true,
     });
 
