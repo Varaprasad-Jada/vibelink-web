@@ -3,56 +3,32 @@ import { io, Socket } from 'socket.io-client';
 import { v4 as uuidv4 } from 'uuid';
 
 export function useVibeSocket() {
-  const socketRef = useRef<Socket | null>(null);
+  const [socket, setSocket] = useState<Socket | null>(null);
   const [onlineCount, setOnlineCount] = useState(0);
   const [isBanned, setIsBanned] = useState(false);
-  const [isConnected, setIsConnected] = useState(false);
 
   useEffect(() => {
     const deviceId = localStorage.getItem('vibelink_device_id') || uuidv4();
     localStorage.setItem('vibelink_device_id', deviceId);
 
-    if (!socketRef.current) {
-      socketRef.current = io("https://vibelink-vowy.onrender.com", {
-        transports: ["websocket"],
-        upgrade: false,
-        secure: true,
-        reconnection: true,
-        reconnectionAttempts: 5,
-        reconnectionDelay: 2000,
-      });
-    }
-
-    const socket = socketRef.current;
-
-    socket.on('connect', () => {
-      console.log("✅ Socket Connected:", socket.id);
-      setIsConnected(true);
-      socket.emit('SIG_REGISTER', { deviceId });
+    const newSocket = io(window.location.origin, {
+      transports: ['websocket', 'polling'],
+      reconnection: true,
     });
 
-    socket.on('disconnect', () => {
-      console.log("❌ Socket Disconnected");
-      setIsConnected(false);
+    newSocket.on('connect', () => {
+      console.log('Connected to signaling server with ID:', newSocket.id);
+      newSocket.emit('SIG_REGISTER', { deviceId });
+      setSocket(newSocket);
     });
 
-    socket.on('SIG_ONLINE', (data) => {
-      if (data && typeof data.count === 'number') {
-        setOnlineCount(data.count);
-      }
-    });
-
-    socket.on('SIG_BANNED', () => setIsBanned(true));
+    newSocket.on('SIG_ONLINE', (data) => setOnlineCount(data.count));
+    newSocket.on('SIG_BANNED', () => setIsBanned(true));
 
     return () => {
-      // Keep the connection alive during app state changes
+      newSocket.disconnect();
     };
   }, []);
 
-  return { 
-    socket: socketRef.current, 
-    onlineCount, 
-    isBanned,
-    isConnected 
-  };
+  return { socket, onlineCount, isBanned };
 }
