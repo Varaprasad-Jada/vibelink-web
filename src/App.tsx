@@ -51,24 +51,16 @@ export default function App() {
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
-  
-  // EMERGENCY REF: Keeps the socket instance alive for the sendMessage function
-  const socketRef = useRef(socket);
-  useEffect(() => {
-    socketRef.current = socket;
-  }, [socket]);
 
   const { startCall, handleSdp, handleIce, cleanup: cleanupRTC } = useWebRTC(socket, (stream) => {
     setRemoteStream(stream);
   });
 
-  // 1. SIGNALING & PEER MANAGEMENT
   useEffect(() => {
     if (!socket) return;
 
     socket.on('SIG_MATCH_FOUND', async (data) => {
-      console.log("MATCH FOUND:", data);
-      setRemoteVideoOff(false);
+      setRemoteVideoOff(false); // Reset remote state
       setPeerSocketId(data.targetSocketId);
       setAppState('CHAT');
       setMessages([{ id: 'system', text: 'You are now chatting with a stranger!', isMe: false }]);
@@ -87,11 +79,14 @@ export default function App() {
       }
     });
 
-    socket.on('SIG_SDP', (data) => handleSdp(data.fromSocketId, data.description));
-    socket.on('SIG_ICE', (data) => handleIce(data.candidate));
-    
     socket.on('SIG_VIDEO_STATE_CHANGE', (data: { isVideoOff: boolean }) => {
       setRemoteVideoOff(data.isVideoOff);
+    });
+
+    socket.on('SIG_SDP', (data) => handleSdp(data.fromSocketId, data.description));
+    socket.on('SIG_ICE', (data) => handleIce(data.candidate));
+    socket.on('SIG_TEXT_MESSAGE', (data) => {
+      setMessages(prev => [...prev, { id: Date.now().toString(), text: data.text, isMe: false }]);
     });
 
     socket.on('SIG_PEER_LEFT', () => {
@@ -104,32 +99,12 @@ export default function App() {
       socket.off('SIG_MATCH_FOUND');
       socket.off('SIG_SDP');
       socket.off('SIG_ICE');
+      socket.off('SIG_TEXT_MESSAGE');
       socket.off('SIG_PEER_LEFT');
       socket.off('SIG_VIDEO_STATE_CHANGE');
     };
   }, [socket, mode, interests]);
 
-  // 2. STABLE MESSAGE LISTENER
-  useEffect(() => {
-    if (!socket) return;
-
-    const handleIncomingMessage = (data: { text: string }) => {
-      console.log("EMERGENCY: Incoming message detected", data.text);
-      setMessages(prev => [...prev, { 
-        id: Math.random().toString(36), 
-        text: data.text, 
-        isMe: false 
-      }]);
-    };
-
-    socket.on('SIG_TEXT_MESSAGE', handleIncomingMessage);
-    
-    return () => {
-      socket.off('SIG_TEXT_MESSAGE', handleIncomingMessage);
-    };
-  }, [socket]);
-
-  // 3. MEDIA BINDING
   useEffect(() => {
     if (remoteVideoRef.current && remoteStream) {
       remoteVideoRef.current.srcObject = remoteStream;
@@ -142,39 +117,29 @@ export default function App() {
     }
   }, [localStream]);
 
-  // 4. AUTO SCROLL
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // 5. SEND MESSAGE (REF-BASED)
-  const sendMessage = () => {
-    const currentSocket = socketRef.current;
-    
-    console.log("TRYING TO SEND:", { 
-      text: inputText, 
-      socketExists: !!currentSocket, 
-      socketId: currentSocket?.id 
-    });
-
-    if (!inputText.trim()) return;
-    
-    if (!currentSocket || !currentSocket.connected) {
-      console.error("CRITICAL: Socket is not connected. Message aborted.");
-      return;
+  const toggleVideo = () => {
+    const nextVideoState = !isVideoOff;
+    setIsVideoOff(nextVideoState);
+    if (localStream) {
+      localStream.getVideoTracks().forEach(track => {
+        track.enabled = !nextVideoState;
+      });
     }
+    socket?.emit('SIG_VIDEO_STATE_CHANGE', { isVideoOff: nextVideoState });
+  };
 
-    // Emit to server
-    currentSocket.emit('SIG_TEXT_MESSAGE', { text: inputText });
-    
-    // Update UI immediately
-    setMessages(prev => [...prev, { 
-      id: Math.random().toString(36), 
-      text: inputText, 
-      isMe: true 
-    }]);
-    
-    setInputText('');
+  const toggleMute = () => {
+    const nextMuteState = !isMuted;
+    setIsMuted(nextMuteState);
+    if (localStream) {
+      localStream.getAudioTracks().forEach(track => {
+        track.enabled = !nextMuteState;
+      });
+    }
   };
 
   const resetChat = () => {
@@ -188,7 +153,6 @@ export default function App() {
     setPeerSocketId(null);
     setIsVideoOff(false);
     setIsMuted(false);
-    setRemoteVideoOff(false);
   };
 
   const startMatching = (selectedMode: Mode) => {
@@ -201,6 +165,13 @@ export default function App() {
     socket?.emit('SIG_SKIP');
     resetChat();
     setAppState('MATCHING');
+  };
+
+  const sendMessage = () => {
+    if (!inputText.trim() || !socket) return;
+    socket.emit('SIG_TEXT_MESSAGE', { text: inputText });
+    setMessages(prev => [...prev, { id: Date.now().toString(), text: inputText, isMe: true }]);
+    setInputText('');
   };
 
   const addInterest = () => {
@@ -378,7 +349,7 @@ export default function App() {
                     ref={remoteVideoRef}
                     autoPlay
                     playsInline
-                    className={cn("w-full h-full object-cover transition-opacity duration-300", (remoteVideoOff || !remoteStream) ? "opacity-0" : "opacity-100")}
+                    className={cn("w-full h-full object-cover transition-opacity duration-300", remoteVideoOff ? "opacity-0" : "opacity-100")}
                   />
                   
                   {remoteVideoOff && (
