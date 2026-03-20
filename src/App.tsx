@@ -46,7 +46,6 @@ export default function App() {
   const [peerSocketId, setPeerSocketId] = useState<string | null>(null);
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoOff, setIsVideoOff] = useState(false);
-  const [remoteVideoOff, setRemoteVideoOff] = useState(false);
 
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const localVideoRef = useRef<HTMLVideoElement>(null);
@@ -60,7 +59,6 @@ export default function App() {
     if (!socket) return;
 
     socket.on('SIG_MATCH_FOUND', async (data) => {
-      setRemoteVideoOff(false); // Reset remote state
       setPeerSocketId(data.targetSocketId);
       setAppState('CHAT');
       setMessages([{ id: 'system', text: 'You are now chatting with a stranger!', isMe: false }]);
@@ -77,10 +75,6 @@ export default function App() {
           socket.emit('SIG_SKIP');
         }
       }
-    });
-
-    socket.on('SIG_VIDEO_STATE_CHANGE', (data: { isVideoOff: boolean }) => {
-      setRemoteVideoOff(data.isVideoOff);
     });
 
     socket.on('SIG_SDP', (data) => handleSdp(data.fromSocketId, data.description));
@@ -101,7 +95,6 @@ export default function App() {
       socket.off('SIG_ICE');
       socket.off('SIG_TEXT_MESSAGE');
       socket.off('SIG_PEER_LEFT');
-      socket.off('SIG_VIDEO_STATE_CHANGE');
     };
   }, [socket, mode, interests]);
 
@@ -121,27 +114,6 @@ export default function App() {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  const toggleVideo = () => {
-    const nextVideoState = !isVideoOff;
-    setIsVideoOff(nextVideoState);
-    if (localStream) {
-      localStream.getVideoTracks().forEach(track => {
-        track.enabled = !nextVideoState;
-      });
-    }
-    socket?.emit('SIG_VIDEO_STATE_CHANGE', { isVideoOff: nextVideoState });
-  };
-
-  const toggleMute = () => {
-    const nextMuteState = !isMuted;
-    setIsMuted(nextMuteState);
-    if (localStream) {
-      localStream.getAudioTracks().forEach(track => {
-        track.enabled = !nextMuteState;
-      });
-    }
-  };
-
   const resetChat = () => {
     setMessages([]);
     setRemoteStream(null);
@@ -151,8 +123,6 @@ export default function App() {
     }
     cleanupRTC();
     setPeerSocketId(null);
-    setIsVideoOff(false);
-    setIsMuted(false);
   };
 
   const startMatching = (selectedMode: Mode) => {
@@ -280,6 +250,12 @@ export default function App() {
                 </div>
               </div>
             </main>
+
+            <footer className="mt-12 text-center">
+              <p className="text-slate-600 text-xs font-medium uppercase tracking-widest">
+                By continuing, you agree to our terms of service.
+              </p>
+            </footer>
           </motion.div>
         )}
 
@@ -316,6 +292,7 @@ export default function App() {
             animate={{ opacity: 1 }}
             className="h-screen flex flex-col overflow-hidden bg-black"
           >
+            {/* Header */}
             <header className="flex items-center justify-between p-4 bg-slate-950/80 backdrop-blur-md border-b border-slate-800 z-50">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-full bg-blue-600/20 flex items-center justify-center">
@@ -334,7 +311,7 @@ export default function App() {
                   <AlertTriangle className="w-5 h-5" />
                 </button>
                 <button 
-                  onClick={() => { resetChat(); setAppState('LANDING'); }}
+                  onClick={() => setAppState('LANDING')}
                   className="p-2 rounded-lg bg-slate-900 text-slate-400 hover:text-white transition-colors"
                 >
                   <X className="w-5 h-5" />
@@ -342,33 +319,28 @@ export default function App() {
               </div>
             </header>
 
+            {/* Main Content */}
             <main className="flex-1 relative flex flex-col overflow-hidden">
               {mode === 'VIDEO' ? (
                 <div className="absolute inset-0 bg-slate-900">
+                  {/* Remote Video */}
                   <video 
                     ref={remoteVideoRef}
                     autoPlay
                     playsInline
-                    className={cn("w-full h-full object-cover transition-opacity duration-300", remoteVideoOff ? "opacity-0" : "opacity-100")}
+                    className="w-full h-full object-cover"
                   />
-                  
-                  {remoteVideoOff && (
-                    <div className="absolute inset-0 flex items-center justify-center flex-col gap-2 bg-slate-950">
-                       <VideoOff className="w-16 h-16 text-slate-700" />
-                       <p className="text-slate-500 font-medium">Stranger paused video</p>
-                    </div>
-                  )}
-
-                  {!remoteStream && !remoteVideoOff && (
+                  {!remoteStream && (
                     <div className="absolute inset-0 flex items-center justify-center flex-col gap-4">
                       <div className="w-16 h-16 rounded-full border-4 border-blue-600 border-t-transparent animate-spin"></div>
                       <p className="text-slate-400 font-medium">Connecting video...</p>
                     </div>
                   )}
 
+                  {/* Local Preview */}
                   <motion.div 
                     drag
-                    dragConstraints={{ left: -100, right: 100, top: -100, bottom: 100 }}
+                    dragConstraints={{ left: 0, right: 0, top: 0, bottom: 0 }}
                     className="absolute top-4 right-4 w-32 aspect-[3/4] rounded-2xl overflow-hidden border-2 border-blue-600 shadow-2xl z-40 bg-slate-800"
                   >
                     <video 
@@ -385,9 +357,10 @@ export default function App() {
                     )}
                   </motion.div>
 
+                  {/* Video Controls */}
                   <div className="absolute bottom-24 left-1/2 -translate-x-1/2 flex items-center gap-4 z-50">
                     <button 
-                      onClick={toggleMute}
+                      onClick={() => setIsMuted(!isMuted)}
                       className={cn(
                         "w-12 h-12 rounded-full flex items-center justify-center transition-all",
                         isMuted ? "bg-red-500 text-white" : "bg-white/10 backdrop-blur-md text-white hover:bg-white/20"
@@ -396,7 +369,7 @@ export default function App() {
                       {isMuted ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
                     </button>
                     <button 
-                      onClick={toggleVideo}
+                      onClick={() => setIsVideoOff(!isVideoOff)}
                       className={cn(
                         "w-12 h-12 rounded-full flex items-center justify-center transition-all",
                         isVideoOff ? "bg-red-500 text-white" : "bg-white/10 backdrop-blur-md text-white hover:bg-white/20"
@@ -405,9 +378,26 @@ export default function App() {
                       {isVideoOff ? <VideoOff className="w-5 h-5" /> : <VideoIcon className="w-5 h-5" />}
                     </button>
                   </div>
+
+                  {/* Chat Overlay for Video */}
+                  <div className="absolute bottom-40 left-4 right-4 max-h-32 overflow-y-auto pointer-events-none flex flex-col gap-2 z-40">
+                    {messages.slice(-3).map(msg => (
+                      <motion.div 
+                        initial={{ opacity: 0, x: -20 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        key={msg.id}
+                        className={cn(
+                          "px-3 py-1.5 rounded-xl text-xs font-medium max-w-[70%] backdrop-blur-md",
+                          msg.isMe ? "ml-auto bg-blue-600/40 text-white" : "bg-black/40 text-slate-200 border border-white/10"
+                        )}
+                      >
+                        {msg.text}
+                      </motion.div>
+                    ))}
+                  </div>
                 </div>
               ) : (
-                <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-950">
+                <div className="flex-1 overflow-y-auto p-4 space-y-4">
                   {messages.map(msg => (
                     <div 
                       key={msg.id}
@@ -429,6 +419,7 @@ export default function App() {
                 </div>
               )}
 
+              {/* Skip Button Overlay */}
               <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-50">
                 <button 
                   onClick={handleSkip}
@@ -440,6 +431,7 @@ export default function App() {
               </div>
             </main>
 
+            {/* Footer Input */}
             <footer className="p-4 bg-slate-950 border-t border-slate-800 pb-8">
               <div className="flex items-center gap-2 max-w-2xl mx-auto">
                 <input 
@@ -448,7 +440,7 @@ export default function App() {
                   onChange={(e) => setInputText(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && sendMessage()}
                   placeholder="Type a message..."
-                  className="flex-1 h-12 bg-slate-900 border-none rounded-2xl px-5 focus:ring-1 focus:ring-blue-600 transition-all text-white"
+                  className="flex-1 h-12 bg-slate-900 border-none rounded-2xl px-5 focus:ring-1 focus:ring-blue-600 transition-all"
                 />
                 <button 
                   onClick={sendMessage}
