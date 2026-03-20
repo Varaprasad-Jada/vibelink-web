@@ -189,10 +189,17 @@ async function startServer() {
     socket.on("SIG_TEXT_MESSAGE", (payload: any = {}) => {
       const session = getSessionBySocketId(socket.id);
       if (session?.peerSocketId) {
-        console.log(`Relaying message from ${socket.id} to ${session.peerSocketId}`);
-        io.to(session.peerSocketId).emit("SIG_TEXT_MESSAGE", { text: payload.text });
+        const peerSocket = io.sockets.sockets.get(session.peerSocketId);
+        if (peerSocket) {
+          console.log(`[Server] Relaying message from ${socket.id} to ${session.peerSocketId}: "${payload.text}"`);
+          peerSocket.emit("SIG_TEXT_MESSAGE", { text: payload.text });
+        } else {
+          console.warn(`[Server] Peer socket ${session.peerSocketId} not found in io.sockets.sockets`);
+          detachPeer(session, "Peer disconnected", false);
+          socket.emit("SIG_PEER_LEFT", { reason: "Peer disconnected" });
+        }
       } else {
-        console.warn(`Attempted to send message from ${socket.id} but no peer found.`);
+        console.warn(`[Server] Attempted to send message from ${socket.id} but no peer found.`);
       }
     });
 
@@ -251,10 +258,16 @@ async function startServer() {
     });
 
     socket.on("disconnect", () => {
-      const session = getSessionBySocketId(socket.id);
-      if (session) {
-        detachPeer(session, "Peer disconnected.", true);
-        usersByDeviceId.delete(session.deviceId);
+      const deviceId = socketToDeviceId.get(socket.id);
+      if (deviceId) {
+        const session = usersByDeviceId.get(deviceId);
+        if (session && session.socketId === socket.id) {
+          console.log(`[Server] Session for ${deviceId} (${socket.id}) disconnected.`);
+          detachPeer(session, "Peer disconnected.", true);
+          usersByDeviceId.delete(deviceId);
+        } else {
+          console.log(`[Server] Old socket ${socket.id} disconnected for device ${deviceId}, but session is now on ${session?.socketId}`);
+        }
         socketToDeviceId.delete(socket.id);
         emitOnlineCount();
       }
